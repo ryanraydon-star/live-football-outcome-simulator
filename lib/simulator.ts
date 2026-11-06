@@ -32,6 +32,9 @@ export type MatchSnapshot = {
   foulsAway: number;
   passesHome: number;
   passesAway: number;
+  momentum: number;
+  fatigueHome: number;
+  fatigueAway: number;
   weather: Weather;
 };
 
@@ -77,6 +80,9 @@ export const defaultMatch: MatchSnapshot = {
   foulsAway: 11,
   passesHome: 378,
   passesAway: 332,
+  momentum: 52,
+  fatigueHome: 32,
+  fatigueAway: 38,
   weather: {
     temperature: 16,
     humidity: 62,
@@ -88,23 +94,29 @@ export const defaultMatch: MatchSnapshot = {
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+export function getWeatherSummary(weather: Weather) {
+  if (weather.rain > 50) return "Rainy";
+  if (weather.wind > 25) return "Windy";
+  if (weather.daylight < 35) return "Low light";
+  if (weather.temperature > 24) return "Warm";
+  return "Clear";
+}
+
 export function calculateOutcomeEstimate(match: MatchSnapshot): OutcomeBreakdown {
-  const timeWeight = clamp(1 + (match.minute / 90) * 0.75, 1, 1.75);
   const scoreDiff = match.scoreHome - match.scoreAway;
   const shotAdv = (match.shotsHome - match.shotsAway) * 0.08;
-  const xgDiff = (match.xgHome - match.xgAway) * 0.46;
+  const xgDiff = (match.xgHome - match.xgAway) * 0.55;
   const possessionAdv = (match.possessionHome - match.possessionAway) * 0.012;
-  const passingAdv = ((match.passesHome - match.passesAway) / 1000) * 0.22;
+  const passingAdv = ((match.passesHome - match.passesAway) / 1000) * 0.25;
   const cornerAdv = (match.cornersHome - match.cornersAway) * 0.05;
   const foulDiff = (match.foulsAway - match.foulsHome) * 0.025;
-
-  const weatherDrag =
-    (match.weather.rain / 100) * 0.12 +
-    (match.weather.wind / 100) * 0.08 -
-    (match.weather.daylight / 100) * 0.05;
+  const momentumBoost = (match.momentum - 50) * 0.012;
+  const fatigueImpact = (match.fatigueAway - match.fatigueHome) * 0.014;
+  const weatherDrag = (match.weather.rain / 100) * 0.12 + (match.weather.wind / 100) * 0.08 - (match.weather.daylight / 100) * 0.05;
+  const timeWeight = clamp(1 + (match.minute / 90) * 0.75, 1, 1.8);
 
   const homeEdge =
-    0.38 +
+    0.35 +
     scoreDiff * 0.12 +
     shotAdv +
     xgDiff +
@@ -112,21 +124,21 @@ export function calculateOutcomeEstimate(match: MatchSnapshot): OutcomeBreakdown
     passingAdv +
     cornerAdv +
     foulDiff +
+    momentumBoost +
+    fatigueImpact +
     weatherDrag +
-    0.15 * timeWeight;
+    0.16 * timeWeight;
 
-  const drawStrength = clamp(0.29 - Math.abs(scoreDiff) * 0.06 + (match.minute > 75 ? 0.05 : 0), 0.12, 0.42);
+  const drawChance = clamp(0.28 - Math.abs(scoreDiff) * 0.06 + (match.minute > 75 ? 0.06 : 0), 0.1, 0.42);
+  const homeChance = clamp(0.5 + homeEdge * 0.18, 0.1, 0.74);
+  const awayChance = clamp(0.5 - homeEdge * 0.18 + (match.scoreAway > match.scoreHome ? 0.08 : 0), 0.08, 0.66);
 
-  let homeProbability = clamp(0.5 + homeEdge * 0.18, 0.12, 0.7);
-  const awayProbability = clamp(0.5 - homeEdge * 0.18 + (match.scoreAway > match.scoreHome ? 0.12 : 0), 0.08, 0.62);
-  const drawProbability = clamp(drawStrength, 0.08, 0.45);
-
-  const total = homeProbability + drawProbability + awayProbability;
+  const total = homeChance + drawChance + awayChance;
 
   return {
-    home: Number(((homeProbability / total) * 100).toFixed(1)),
-    draw: Number(((drawProbability / total) * 100).toFixed(1)),
-    away: Number(((awayProbability / total) * 100).toFixed(1)),
+    home: Number(((homeChance / total) * 100).toFixed(1)),
+    draw: Number(((drawChance / total) * 100).toFixed(1)),
+    away: Number(((awayChance / total) * 100).toFixed(1)),
   };
 }
 
@@ -141,11 +153,13 @@ export function runSimulation(match: MatchSnapshot, iterations = 1200): { home: 
     const weatherFactor = 1 - (match.weather.rain / 200 + match.weather.wind / 220);
     const pressure = ((match.shotsHome + match.xgHome * 2.2) - (match.shotsAway + match.xgAway * 2.2)) * 0.13;
     const formBias = (homeTeam.form - awayTeam.form) * 0.01;
-    const chance = 0.34 + scoreDiff * 0.06 + pressure + formBias + weatherFactor * 0.08 + (timeFactor - 0.5) * 0.12;
+    const momentumBias = (match.momentum - 50) * 0.013;
+    const fatigueBias = (match.fatigueAway - match.fatigueHome) * 0.008;
+    const chance = 0.36 + scoreDiff * 0.07 + pressure + formBias + weatherFactor * 0.08 + momentumBias + fatigueBias + (timeFactor - 0.5) * 0.14;
 
-    const homeChance = clamp(chance, 0.08, 0.78);
-    const awayChance = clamp(1 - homeChance + 0.12, 0.08, 0.72);
-    const drawChance = clamp(0.24 + (timeFactor - 0.55) * 0.32 - Math.abs(scoreDiff) * 0.04, 0.08, 0.4);
+    const homeChance = clamp(chance, 0.08, 0.76);
+    const awayChance = clamp(1 - homeChance + 0.12, 0.08, 0.68);
+    const drawChance = clamp(0.22 + (timeFactor - 0.55) * 0.32 - Math.abs(scoreDiff) * 0.04, 0.08, 0.42);
     const total = homeChance + awayChance + drawChance;
 
     const outcomeRoll = Math.random() * total;

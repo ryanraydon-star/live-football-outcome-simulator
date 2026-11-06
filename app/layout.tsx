@@ -1,9 +1,6 @@
-import type { Metadata } from "next";
-import "./globals.css";
-
-export const metadata: Metadata = {
+export const metadata = {
   title: "Live Football Outcome Simulator",
-  description: "Weather-aware live sports outcome simulator with Everton-focused analytics",
+  description: "Live football outcome simulator with weather-aware probability modeling for Everton and beyond",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

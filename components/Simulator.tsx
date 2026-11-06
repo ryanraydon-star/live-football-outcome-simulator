@@ -1,28 +1,103 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   awayTeam,
   calculateOutcomeEstimate,
   defaultMatch,
+  getWeatherSummary,
   homeTeam,
   runSimulation,
   type MatchSnapshot,
 } from "@/lib/simulator";
 
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const formatPercent = (value: number) => `${value.toFixed(1)}%`;
+
+const buildDefaultWeather = async () => {
+  try {
+    const response = await fetch("/api/weather?lat=53.438&lon=-2.966", { cache: "no-store" });
+    if (!response.ok) return defaultMatch.weather;
+    const data = await response.json();
+    return {
+      temperature: Number(data.temperature ?? defaultMatch.weather.temperature),
+      humidity: Number(data.humidity ?? defaultMatch.weather.humidity),
+      wind: Number(data.wind ?? defaultMatch.weather.wind),
+      rain: Number(data.rain ?? defaultMatch.weather.rain),
+      daylight: Number(data.daylight ?? defaultMatch.weather.daylight),
+    };
+  } catch {
+    return defaultMatch.weather;
+  }
+};
 
 export function Simulator() {
   const [match, setMatch] = useState<MatchSnapshot>(defaultMatch);
-  const [simulated, setSimulated] = useState(() => runSimulation(defaultMatch, 1200));
+  const [simulated, setSimulated] = useState(() => runSimulation(defaultMatch, 1400));
+  const [isLive, setIsLive] = useState(true);
+  const [statusText, setStatusText] = useState("Live match feed running");
+
+  useEffect(() => {
+    let disposed = false;
+
+    const syncWeather = async () => {
+      const weather = await buildDefaultWeather();
+      if (!disposed) {
+        setMatch((current) => ({
+          ...current,
+          weather,
+        }));
+      }
+    };
+
+    syncWeather();
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isLive) return;
+
+    const interval = window.setInterval(() => {
+      setMatch((current) => {
+        const minute = clamp(current.minute + 1, 0, 90);
+        const momentum = clamp(current.momentum + (Math.random() > 0.5 ? 1 : -1), 30, 70);
+        const possessionHome = clamp(
+          current.possessionHome + (current.scoreHome >= current.scoreAway ? 1 : -1),
+          35,
+          65,
+        );
+
+        const xgHome = Number(clamp(current.xgHome + (Math.random() - 0.5) * 0.25, 0.4, 2.8).toFixed(2));
+        const xgAway = Number(clamp(current.xgAway + (Math.random() - 0.5) * 0.22, 0.3, 2.5).toFixed(2));
+
+        const next: MatchSnapshot = {
+          ...current,
+          minute,
+          momentum,
+          possessionHome,
+          possessionAway: 100 - possessionHome,
+          xgHome,
+          xgAway,
+          shotsHome: clamp(current.shotsHome + (Math.random() > 0.6 ? 1 : 0), 4, 18),
+          shotsAway: clamp(current.shotsAway + (Math.random() > 0.65 ? 1 : 0), 3, 17),
+          passesHome: clamp(current.passesHome + Math.round(Math.random() * 12), 220, 520),
+          passesAway: clamp(current.passesAway + Math.round(Math.random() * 10), 190, 500),
+        };
+
+        return next;
+      });
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [isLive]);
 
   const estimate = useMemo(() => calculateOutcomeEstimate(match), [match]);
 
   const updateMatch = (key: keyof MatchSnapshot, value: number) => {
-    setMatch((current) => ({
-      ...current,
-      [key]: value,
-    }));
+    setMatch((current) => ({ ...current, [key]: value }));
   };
 
   const updateWeather = (key: keyof MatchSnapshot["weather"], value: number) => {
@@ -37,11 +112,20 @@ export function Simulator() {
 
   const updateRun = () => {
     setSimulated(runSimulation(match, 1400));
+    setStatusText("Simulation refreshed from current match state");
+    setTimeout(() => setStatusText(isLive ? "Live match feed running" : "Live feed paused"), 1800);
+  };
+
+  const resetMatch = () => {
+    setMatch(defaultMatch);
+    setSimulated(runSimulation(defaultMatch, 1400));
+    setStatusText("Match data reset to Everton vs Leicester default");
   };
 
   const expectedGoals = ((match.xgHome + match.xgAway) / 2).toFixed(2);
-  const homeControl = Math.min(100, Math.max(0, match.possessionHome));
+  const homeControl = clamp(match.possessionHome, 35, 65);
   const awayControl = 100 - homeControl;
+  const weatherLabel = getWeatherSummary(match.weather);
 
   const probabilities = [
     { label: "Home", key: "home", value: estimate.home, color: "home" },
@@ -57,8 +141,21 @@ export function Simulator() {
             <div className="brand-mark">⚽</div>
             <h1>Live Football Outcome Simulator</h1>
           </div>
-          <div className="badge">Weather-aware + live stats</div>
+
+          <div className="header-actions">
+            <button className="toggle-button" onClick={() => setIsLive((current) => !current)}>
+              {isLive ? "Pause live feed" : "Resume live feed"}
+            </button>
+            <button className="ghost-button" onClick={resetMatch}>Reset</button>
+          </div>
         </header>
+
+        <div className="live-banner">
+          <div className="live-indicator" />
+          <div>
+            <strong>{statusText}</strong>
+          </div>
+        </div>
 
         <div className="grid">
           <section className="panel match-panel">
@@ -90,12 +187,31 @@ export function Simulator() {
                 <div className="meta-value">{homeControl}%</div>
               </div>
               <div className="meta-card">
-                <div className="meta-label">Expected goals</div>
+                <div className="meta-label">xG</div>
                 <div className="meta-value">{expectedGoals}</div>
               </div>
               <div className="meta-card">
                 <div className="meta-label">Weather</div>
-                <div className="meta-value">{match.weather.temperature}°C</div>
+                <div className="meta-value">{weatherLabel}</div>
+              </div>
+            </div>
+
+            <div className="stat-strip">
+              <div className="stat-pill">
+                <span>Momentum</span>
+                <strong>{match.momentum}</strong>
+              </div>
+              <div className="stat-pill">
+                <span>Fatigue</span>
+                <strong>{match.fatigueHome}/{match.fatigueAway}</strong>
+              </div>
+              <div className="stat-pill">
+                <span>Rain</span>
+                <strong>{match.weather.rain}%</strong>
+              </div>
+              <div className="stat-pill">
+                <span>Sunlight</span>
+                <strong>{match.weather.daylight}%</strong>
               </div>
             </div>
 
@@ -111,8 +227,8 @@ export function Simulator() {
 
               <label className="slider-box">
                 <div className="slider-top">
-                  <span>Score</span>
-                  <strong>{match.scoreHome} - {match.scoreAway}</strong>
+                  <span>Home score</span>
+                  <strong>{match.scoreHome}</strong>
                 </div>
                 <input type="range" min="0" max="5" value={match.scoreHome} onChange={(event) => updateMatch("scoreHome", Number(event.target.value))} />
               </label>
@@ -122,7 +238,7 @@ export function Simulator() {
                   <span>Home possession</span>
                   <strong>{match.possessionHome}%</strong>
                 </div>
-                <input type="range" min="25" max="75" value={match.possessionHome} onChange={(event) => updateMatch("possessionHome", Number(event.target.value))} />
+                <input type="range" min="35" max="65" value={match.possessionHome} onChange={(event) => updateMatch("possessionHome", Number(event.target.value))} />
               </label>
 
               <label className="slider-box">
@@ -207,18 +323,26 @@ export function Simulator() {
 
               <label className="slider-box">
                 <div className="slider-top">
-                  <span>Home corners</span>
-                  <strong>{match.cornersHome}</strong>
+                  <span>Momentum</span>
+                  <strong>{match.momentum}</strong>
                 </div>
-                <input type="range" min="0" max="12" value={match.cornersHome} onChange={(event) => updateMatch("cornersHome", Number(event.target.value))} />
+                <input type="range" min="30" max="70" value={match.momentum} onChange={(event) => updateMatch("momentum", Number(event.target.value))} />
               </label>
 
               <label className="slider-box">
                 <div className="slider-top">
-                  <span>Away corners</span>
-                  <strong>{match.cornersAway}</strong>
+                  <span>Home fatigue</span>
+                  <strong>{match.fatigueHome}</strong>
                 </div>
-                <input type="range" min="0" max="12" value={match.cornersAway} onChange={(event) => updateMatch("cornersAway", Number(event.target.value))} />
+                <input type="range" min="0" max="100" value={match.fatigueHome} onChange={(event) => updateMatch("fatigueHome", Number(event.target.value))} />
+              </label>
+
+              <label className="slider-box">
+                <div className="slider-top">
+                  <span>Away fatigue</span>
+                  <strong>{match.fatigueAway}</strong>
+                </div>
+                <input type="range" min="0" max="100" value={match.fatigueAway} onChange={(event) => updateMatch("fatigueAway", Number(event.target.value))} />
               </label>
             </div>
           </section>
@@ -264,7 +388,7 @@ export function Simulator() {
                 </div>
                 <div className="summary-box">
                   <strong>Weather</strong>
-                  <span>{match.weather.rain}% rain</span>
+                  <span>{weatherLabel}</span>
                 </div>
                 <div className="summary-box">
                   <strong>Condition</strong>
